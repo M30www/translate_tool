@@ -131,11 +131,19 @@ def report(summary: dict, events: List[dict], path: str) -> None:
         gap = event["t"] - last
         mark = "  " if gap < 5 else " +"
         color = event.get("col", "")
-        print(f"  {mark}[{event['t']:7.1f}s +{gap:5.1f}s] {event['src']:<4}"
+        flag = "↻" if event.get("updates") else ("…" if event.get("partial") else " ")
+        print(f"  {mark}[{event['t']:7.1f}s +{gap:5.1f}s]{flag} {event['src']:<4}"
               f" {event['score']:5.3f} {color:<8} {event['text']}")
         last = event["t"]
     if len(events) > TIMELINE_LIMIT:
         print(f"  … 其余 {len(events) - TIMELINE_LIMIT} 条略")
+
+    updated = [e for e in events if e.get("updates")]
+    partial = [e for e in events if e.get("partial")]
+    if updated or partial:
+        print(f"\n  ── 文本状态:补全更新 {len(updated)} 次,无昵称前缀(残片/系统消息) {len(partial)} 条 ──")
+        for event in updated[:6]:
+            print(f"    ↻ [{event['t']:6.1f}s] {event['text'][:52]}")
 
     clusters = cluster_colors(events)
     if len(clusters) > 1:

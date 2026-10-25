@@ -186,13 +186,17 @@ def _same_visual_line(a: tuple, b: tuple, gap_ratio: float) -> bool:
 
 
 def drop_clipped(entries: list, ratio: float = 0.7, min_entries: int = 4) -> list:
-    """丢掉被聊天视口裁掉一半的行。
+    """丢掉"框太矮"的行 —— 这些行**没有翻译价值**。
 
-    依据:聊天面板的滚动区会把首行/末行裁成半行(实测截图里顶部只剩 `试。`、底部只剩半句),
-    这种行必然读错,而且**下一帧就会以完整形式出现**,丢它不丢信息。
+    依据:聊天面板的滚动区会把首行/末行裁成很小的一条(实测截图里顶部只剩一条缝、
+    底部只剩半句),这种行必然读错,而且**下一帧就会以完整形式出现**,丢它不丢信息。
+
+    注意区分两种情况,别混:
+      · 框太矮(< ratio × 中位高度) = 只露出一条缝 = 没有翻译价值 → 丢(本函数)
+      · 框高正常但缺昵称前缀 = 头部滚出视口 = 残片,有翻译价值 → 保留,由 probe 侧标记 partial
 
     判据只看框高:半行的高度明显偏小(实测 7px / 16px vs 正常 26px = 0.27 / 0.62)。
-    不用宽度判——像 `试。` 这种完整但很短的行,宽度小、高度正常。
+    不用宽度判——像 `试。` 这种完整但很短的行,宽度小、高度正常(20px)。
 
     min_entries 保护:行数太少时中位数本身不可靠,宁可不裁。
     """
@@ -294,7 +298,7 @@ def join_wrapped(lines: list, max_gap: float = LINE_GAP) -> list:
 
 
 def ensemble(img, engines: dict, min_score: float, merge: bool = True,
-             join_lines: bool = False) -> list:
+             join_lines: bool = False, height_ratio: float = 0.7) -> list:
     """两个模型各读一遍,逐框择优,可选地把同一行的碎片横向拼起来,按屏幕顺序返回。
 
     返回 (top, left, src, score, text, rgb)。rgb 是该行字形笔画色,用于区分消息类型
@@ -328,7 +332,8 @@ def ensemble(img, engines: dict, min_score: float, merge: bool = True,
         entries.append((min(ys), min(xs), max(ys), max(xs), src, score, text, rgb))
 
     if merge:
-        entries = drop_clipped(entries)     # 先裁掉半行,免得它参与后面的横向/纵向合并
+        # 先裁掉"太矮=没翻译价值"的行,免得它参与后面的横向/纵向合并
+        entries = drop_clipped(entries, ratio=height_ratio)
     lines = merge_fragments(entries) if merge else [
         (e[0], e[1], e[4], e[5], e[6], e[7]) for e in entries]
 
@@ -366,6 +371,8 @@ def main() -> int:
                         help="低于这个置信度的行不打印(默认 0.5,调低能看到更多候选)")
     parser.add_argument("--no-merge", action="store_true",
                         help="不做同一行碎片合并(用于对比合并前后的差异)")
+    parser.add_argument("--min-height-ratio", type=float, default=0.7,
+                        help="框高低于中位数的这个比例就视为没翻译价值、直接丢弃(默认 0.7)")
     parser.add_argument("--no-join-wrapped", action="store_true",
                         help="不把换行显示的续行拼回上一条(默认拼:已用颜色区分,不会误并系统提示)")
     args = parser.parse_args()
@@ -407,7 +414,8 @@ def main() -> int:
 
         started = time.perf_counter()
         lines = ensemble(img, engines, args.min_score, merge=not args.no_merge,
-                         join_lines=not args.no_join_wrapped)
+                         join_lines=not args.no_join_wrapped,
+                         height_ratio=args.min_height_ratio)
         cost_ms = (time.perf_counter() - started) * 1000
 
         if not lines:

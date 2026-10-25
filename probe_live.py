@@ -62,6 +62,7 @@ class Stats:
     e2e_ms: List[float] = field(default_factory=list)
     lines: int = 0
     new_lines: int = 0
+    updated: int = 0
     events: List[dict] = field(default_factory=list)   # 新行事件,供 analyze_log.py 判读
 
 
@@ -160,18 +161,18 @@ def resolve_source(probe, args):
 def emit(elapsed: float, ratio: float, capture_ms: float, diff_ms: float,
          ocr_ms: float, lines: list, seen: dict, reported: dict,
          similar_thr: float, events: list, visible_ttl: float,
-         forget_after: float, history: list, prefix_re) -> Tuple[int, list]:
-    """只报「刚出现在屏幕上、且没报过」的消息;没新行就一个字都不打。
+         forget_after: float, history: list, prefix_re) -> Tuple[int, int, list]:
+    """只报「刚出现在屏幕上、且没报过」的消息;没新行就一个字都不打。返回 (新行数, 补全数, 帧键)。
 
     判据全部建立在 norm_key 上(剥掉行首昵称前缀、去空白标点),因为 OCR 在这类小字上
     的抖动主要发生在前缀:正文一致的两帧会被原文比较判成两条不同消息(实测一条消息
-    被报 18 次)。具体三条规则:
-      · seen     : key → 最后一次在屏幕上看到的时刻。存活期内(visible_ttl)出现 = 不是新消息,
-                   这样偶尔漏读一帧也不会误报。
+    被报 18 次)。四条规则:
+      · seen     : key → 最后一次在屏幕上看到的时刻。存活期内(visible_ttl)出现 = 不是新消息。
       · reported : key → 最后报出时刻。forget_after 内不重报,挡掉滚动/回看造成的重复。
-      · history  : 最近报过的 (key, text)。若当前行**没有昵称前缀**且其 key 是某条已报消息的
-                   子串,说明这条消息的头部已被视口裁掉(滚出画面),它只是残片 → 不报。
-                   实测:长句后半截 `못하지 다음 게임은…`、系统提示尾部 `言息数量有限…` 都属此类。
+      · 残片抑制 : 无昵称前缀 且 key 是某条已报消息的子串 → 那条消息已经展示过了,不重复报。
+      · 补全更新 : 新的 key **包含**某条已报消息的 key → 同一条消息这次读得更全(头部滚回来了),
+                   标成更新而不是新消息,让上层替换已显示的那条。这是"残片也要翻译"的前提:
+                   先看到的残片照常翻,等完整版出现再更新文本。
     """
     now = time.perf_counter()
     fresh = []
@@ -189,30 +190,46 @@ def emit(elapsed: float, ratio: float, capture_ms: float, diff_ms: float,
             continue
         if (now - reported.get(key, -1e9)) <= forget_after:
             continue
-        if not prefix_re.match(text) and len(key) >= 4:
+
+        supersedes = None
+        if len(key) >= 4:
+            for old_key, _old_text in reversed(history):
+                if len(old_key) >= 4 and old_key != key and old_key in key:
+                    supersedes = old_key
+                    break
+        if supersedes is None and not prefix_re.match(text) and len(key) >= 4:
             if any(key in old_key for old_key, _old_text in history):
-                continue        # 残缺续行(头部被裁),不是新消息
+                continue        # 残缺续行(头部被裁),那条完整消息已经报过
         if similar_thr > 0:
             from difflib import SequenceMatcher
             if any(SequenceMatcher(None, other, text).ratio() >= similar_thr
                    for other in [e["text"] for e in events[-6:]]):
                 continue
-        fresh.append((key, top, left, src, score, text, rgb))
+        fresh.append((key, top, left, src, score, text, rgb,
+                      supersedes, not prefix_re.match(text)))
 
+    updates = 0
     if fresh:
         e2e = capture_ms + diff_ms + ocr_ms
         print(f"\n[{elapsed:7.1f}s] 新行 {len(fresh)}   变化 {ratio*100:5.2f}%"
               f"   OCR {ocr_ms:.0f} ms   端到端 {e2e:.0f} ms")
-        for key, top, left, src, score, text, rgb in fresh:
+        for key, top, left, src, score, text, rgb, supersedes, partial in fresh:
             color = "#%02X%02X%02X" % tuple(rgb)
-            print(f"   {src:<4} {score:5.3f} {color}  {text}")
+            if supersedes:
+                updates += 1
+                mark = "↻"
+                history[:] = [item for item in history if item[0] != supersedes]
+            else:
+                mark = "…" if partial else " "
+            print(f"  {mark} {src:<4} {score:5.3f} {color}  {text}")
             reported[key] = now
             history.append((key, text))
             del history[:-40]          # 只留最近 40 条,足够挡住刚滚出去的残片
             events.append({"t": round(elapsed, 3), "y": int(top), "x": int(left),
                            "col": color, "src": src, "score": round(float(score), 4),
-                           "text": text})
-    return len(fresh), list(frame)
+                           "text": text, "partial": partial,
+                           "updates": supersedes})
+    return len(fresh) - updates, updates, list(frame)
 
 
 def heartbeat(stats: Stats, elapsed: float) -> None:
@@ -220,7 +237,7 @@ def heartbeat(stats: Stats, elapsed: float) -> None:
     skip = stats.skipped / stats.frames * 100 if stats.frames else 0
     print(f"[{elapsed:7.1f}s] 帧 {stats.frames:5d} {fps:4.1f}fps | 跳过 {skip:4.1f}% |"
           f" OCR {stats.ocr_runs:3d} 次 均 {pct(stats.ocr_ms, 50):4.0f}ms |"
-          f" 新行 {stats.new_lines:3d} | 累计行 {stats.lines:4d}")
+          f" 新行 {stats.new_lines:3d} | 补全 {stats.updated:2d} | 累计行 {stats.lines:4d}")
 
 
 def report(stats: Stats, args, wall_s: float) -> None:
@@ -238,7 +255,8 @@ def report(stats: Stats, args, wall_s: float) -> None:
           f"  max {max(stats.ocr_ms) if stats.ocr_ms else 0:5.1f} ms   共 {stats.ocr_runs} 次")
     print(f"  端到端   avg {pct(stats.e2e_ms, 50):5.1f}  p95 {pct(stats.e2e_ms, 95):5.1f} ms"
           "   (画面变化 → 拿到文本)")
-    print(f"  文本     累计 {stats.lines} 行,其中新行 {stats.new_lines} 行")
+    print(f"  文本     累计 {stats.lines} 行,其中新行 {stats.new_lines} 行"
+          f",补全更新 {stats.updated} 次")
     budget = pct(stats.e2e_ms, 95)
     verdict = "够用(<1s)" if budget < 1000 else "偏慢(>1s),聊天场景会迟钝"
     print(f"\n  判断:端到端 p95 {budget:.0f} ms —— {verdict}")
@@ -266,6 +284,7 @@ def write_json(path: str, args, desc: str, stats: Stats, wall_s: float) -> None:
             "e2e_ms_p95": round(pct(stats.e2e_ms, 95), 1),
             "lines_total": stats.lines,
             "new_lines": stats.new_lines,
+            "updated": stats.updated,
         },
         "events": stats.events,
     }
@@ -302,6 +321,8 @@ def build_args(argv: Sequence[str]):
                    help="消息在屏幕上存活的判定窗口,挡住漏读一帧导致的误报(默认 6 秒)")
     p.add_argument("--no-merge", action="store_true",
                    help="不做同一行碎片合并(默认合并:长句被检测框切碎时要靠它拼回去)")
+    p.add_argument("--min-height-ratio", type=float, default=0.7,
+                   help="框高低于中位数的这个比例 = 没翻译价值,直接丢弃(默认 0.7)")
     p.add_argument("--no-join-wrapped", action="store_true",
                    help="不把换行显示的续行拼回上一条(默认拼:靠颜色区分,不会误并系统提示)")
     p.add_argument("--dedupe-similar", type=float, default=0.0,
@@ -379,18 +400,20 @@ def main(argv: Sequence[str]) -> int:
                 t = time.perf_counter()
                 lines = ocr.ensemble(to_bgr(img), engines, args.min_score,
                                      merge=not args.no_merge,
-                                     join_lines=not args.no_join_wrapped)
+                                     join_lines=not args.no_join_wrapped,
+                                     height_ratio=args.min_height_ratio)
                 ocr_ms = (time.perf_counter() - t) * 1000
                 stats.ocr_runs += 1
                 stats.ocr_ms.append(ocr_ms)
                 stats.e2e_ms.append(capture_ms + diff_ms + ocr_ms)
                 stats.lines += len(lines)
-                fresh, _ = emit(time.perf_counter() - started, ratio,
-                                capture_ms, diff_ms, ocr_ms, lines,
-                                seen, reported, args.dedupe_similar, stats.events,
-                                args.visible_ttl, args.recent_ttl,
-                                history, ocr.PREFIX)
+                fresh, updated, _ = emit(time.perf_counter() - started, ratio,
+                                         capture_ms, diff_ms, ocr_ms, lines,
+                                         seen, reported, args.dedupe_similar, stats.events,
+                                         args.visible_ttl, args.recent_ttl,
+                                         history, ocr.PREFIX)
                 stats.new_lines += fresh
+                stats.updated += updated
             else:
                 stats.skipped += 1
 

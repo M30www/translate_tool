@@ -31,6 +31,28 @@ GAP_FACTOR = 3.0      # 事件间隔超过"中位间隔的 N 倍"就算异常空
 TIMELINE_LIMIT = 40   # 时间线最多打印多少条
 
 
+def cluster_colors(events: List[dict], tol: float = 40.0) -> List[Tuple[str, List[dict]]]:
+    """把颜色按距离聚簇。
+
+    必要之举:同一类文字每帧量出的颜色有 ±10 的抖动(实测青色会散成 #00A5DD~#00B3F0),
+    按精确 hex 统计会报出几十种"颜色",把真正的三四类淹没掉。
+    """
+    groups: List[Tuple[List[float], List[dict]]] = []
+    for event in events:
+        color = event.get("col") or ""
+        if not color.startswith("#") or len(color) != 7:
+            continue
+        rgb = [int(color[i:i + 2], 16) for i in (1, 3, 5)]
+        for rep_rgb, group in groups:
+            if sum(abs(a - b) for a, b in zip(rgb, rep_rgb)) / 3 <= tol:
+                group.append(event)
+                break
+        else:
+            groups.append((rgb, [event]))
+    groups.sort(key=lambda item: -len(item[1]))
+    return [("#%02X%02X%02X" % tuple(rep), group) for rep, group in groups]
+
+
 def unify(events: List[dict]) -> List[List[dict]]:
     """按归一化键把同一消息的所有抖动变体收回一组。"""
     buckets: dict = {}
@@ -115,13 +137,11 @@ def report(summary: dict, events: List[dict], path: str) -> None:
     if len(events) > TIMELINE_LIMIT:
         print(f"  … 其余 {len(events) - TIMELINE_LIMIT} 条略")
 
-    colors: dict = {}
-    for event in events:
-        colors.setdefault(event.get("col", "-"), []).append(event)
-    if len(colors) > 1:
-        print(f"\n  ── 文字颜色分布 {len(colors)} 种(用来区分聊天/系统提示)──")
-        for color, group in sorted(colors.items(), key=lambda kv: -len(kv[1]))[:8]:
-            print(f"    {color:<9} ×{len(group):<4} 例:{group[0]['text'][:34]}")
+    clusters = cluster_colors(events)
+    if len(clusters) > 1:
+        print(f"\n  ── 文字颜色分布 {len(clusters)} 类(用来区分聊天/系统提示)──")
+        for rep, group in clusters[:8]:
+            print(f"    {rep:<9} ×{len(group):<4} 例:{group[0]['text'][:34]}")
 
     buckets = unify(events)
     print(f"\n  ── 按正文归一化后的真实消息 {len(buckets)} 条"

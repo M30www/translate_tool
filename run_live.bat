@@ -19,8 +19,16 @@ if not exist ".venv\Scripts\python.exe" (
     exit /b 1
 )
 
+REM Default arguments used when launched with no arguments (double-click).
+REM   --select      interactively pick the chat panel region
+REM   --min-score   drop low-confidence garbage lines (misreads score 0.53-0.72,
+REM                 real chat lines score >=0.88). See docs/experiments.md E7.
+REM Change DEFAULT below if you want different defaults; note that passing ANY
+REM argument bypasses DEFAULT entirely (then you must pass everything yourself).
+set "DEFAULT=--select --min-score 0.75"
+
 if "%~1"=="" (
-    ".venv\Scripts\python.exe" probe_live.py --select
+    ".venv\Scripts\python.exe" probe_live.py %DEFAULT%
 ) else (
     ".venv\Scripts\python.exe" probe_live.py %*
 )

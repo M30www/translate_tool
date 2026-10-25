@@ -79,7 +79,8 @@ def dominant_color(events: list, tol: float = 40.0) -> str:
 
 def select_events(events: list, chat_color: str, guess_lang) -> tuple[list, dict]:
     """挑出"值得翻译的聊天行",并统计每步砍掉了多少。"""
-    stats = {"total": len(events), "off_color": 0, "no_text": 0, "chinese": 0}
+    stats = {"total": len(events), "off_color": 0, "no_text": 0, "chinese": 0,
+             "untranslated": 0}
     picked = []
     target = hex_to_rgb(chat_color) if chat_color else None
     for event in events:
@@ -117,15 +118,37 @@ def split_prefix(text: str, prefix_re) -> tuple[str, str]:
 
 
 def dedupe(events: list) -> list:
-    """同一句话只翻一次(保留最早出现的那条)。"""
+    """同一句话只翻一次;**残片若被完整版包含,只翻完整版**。
+
+    依据:E8 里一条长句会先以 2 行版、再以 3 行版出现,两条都翻等于白花一次调用,
+    而且报告里会出现两条几乎一样的译文。
+    """
     seen, unique = set(), []
     for event in events:
         key = norm_key(event["text"])
         if key in seen:
             continue
         seen.add(key)
-        unique.append(event)
-    return unique
+        unique.append((key, event))
+
+    keys = [key for key, _event in unique]
+    kept = []
+    for key, event in unique:
+        if any(key != other and len(key) >= 4 and key in other for other in keys):
+            continue        # 自己只是别人的一部分 → 丢掉,保留完整版
+        kept.append(event)
+    return kept
+
+
+def mark_untranslated(body: str, value: str) -> str:
+    """译文与原句几乎一样 = 引擎没翻(常见于英文短句)。
+
+    必须标出来:否则报告里看着"有译文",实际是原文照抄,会误导质量判断。
+    """
+    from difflib import SequenceMatcher
+    if value.strip() and SequenceMatcher(None, norm_key(body), norm_key(value)).ratio() >= 0.9:
+        return f"⟨未翻⟩{value}"
+    return value
 
 
 def main(argv) -> int:
@@ -179,8 +202,11 @@ def main(argv) -> int:
             print(f"  [!] 第 {start // args.batch_size + 1} 批失败: "
                   f"{type(exc).__name__}: {exc}")
             translated = [f"⟨失败⟩{body}" for _pfx, body in parts]
-        for event, (prefix, _body), value in zip(chunk, parts, translated):
-            rows.append((event["t"], event["text"], f"{prefix}{value}".strip()))
+        for event, (prefix, body), value in zip(chunk, parts, translated):
+            marked = mark_untranslated(body, value)
+            if marked.startswith("⟨未翻⟩"):
+                stats["untranslated"] = stats.get("untranslated", 0) + 1
+            rows.append((event["t"], event["text"], f"{prefix}{marked}".strip()))
         print(f"  … 已翻 {min(start + len(chunk), len(unique))}/{len(unique)}")
     elapsed = time.perf_counter() - started
     if hasattr(translator, "save"):
@@ -200,6 +226,9 @@ def main(argv) -> int:
           f"(平均 {elapsed / max(1, len(rows)) * 1000:.0f} ms/条)")
     inner_hits = getattr(translator, "hits", 0)
     print(f"  缓存命中 {inner_hits} 条  |  {usage_report(translator)}")
+    if stats.get("untranslated"):
+        print(f"  [!] 其中 {stats['untranslated']} 条引擎没翻(译=原文,已标 ⟨未翻⟩)"
+              f"—— 免费引擎对英文短句/黑话常这样,不是我们管道的问题")
     print(f"  结果已写入: {os.path.abspath(out_path)}")
     return 0
 

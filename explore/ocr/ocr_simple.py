@@ -185,6 +185,27 @@ def _same_visual_line(a: tuple, b: tuple, gap_ratio: float) -> bool:
     return -0.5 * max(a_h, b_h) <= gap <= gap_ratio * max(a_h, b_h)
 
 
+def drop_clipped(entries: list, ratio: float = 0.7, min_entries: int = 4) -> list:
+    """丢掉被聊天视口裁掉一半的行。
+
+    依据:聊天面板的滚动区会把首行/末行裁成半行(实测截图里顶部只剩 `试。`、底部只剩半句),
+    这种行必然读错,而且**下一帧就会以完整形式出现**,丢它不丢信息。
+
+    判据只看框高:半行的高度明显偏小(实测 7px / 16px vs 正常 26px = 0.27 / 0.62)。
+    不用宽度判——像 `试。` 这种完整但很短的行,宽度小、高度正常。
+
+    min_entries 保护:行数太少时中位数本身不可靠,宁可不裁。
+    """
+    if len(entries) < min_entries:
+        return entries
+    heights = sorted(e[2] - e[0] for e in entries)
+    median = heights[len(heights) // 2]
+    if median <= 0:
+        return entries
+    kept = [e for e in entries if (e[2] - e[0]) >= ratio * median]
+    return kept or entries
+
+
 def merge_fragments(entries: list, gap_ratio: float = 0.8) -> list:
     """把同一视觉行上相邻的检测框拼回一条消息。
 
@@ -306,6 +327,8 @@ def ensemble(img, engines: dict, min_score: float, merge: bool = True,
         rgb = text_color(img, box)
         entries.append((min(ys), min(xs), max(ys), max(xs), src, score, text, rgb))
 
+    if merge:
+        entries = drop_clipped(entries)     # 先裁掉半行,免得它参与后面的横向/纵向合并
     lines = merge_fragments(entries) if merge else [
         (e[0], e[1], e[4], e[5], e[6], e[7]) for e in entries]
 

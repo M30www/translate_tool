@@ -243,6 +243,11 @@ def _parse_array(content: str) -> list | None:
     return value if isinstance(value, list) else None
 
 
+# 缓存键的版本前缀。**改了送翻内容的口径就要升版本**:否则旧值会被当成新结果命中。
+# 踩过:实现"只翻正文"之后,缓存里旧值(带 `[Ir1s]:` 前缀)被原样返回,报告里出现重复前缀。
+CACHE_VERSION = "v2"
+
+
 class CachedTranslator(Translator):
     """按 norm_key 缓存译文。
 
@@ -267,7 +272,7 @@ class CachedTranslator(Translator):
                 self.cache = {}
 
     def _key(self, text: str) -> str:
-        return norm_key(text) or text.strip()
+        return f"{CACHE_VERSION}|{norm_key(text) or text.strip()}"
 
     def translate_batch(self, texts: list[str]) -> list[str]:
         out: list[str | None] = [None] * len(texts)
@@ -340,6 +345,16 @@ def build_translator(engine: str = "llm", cache_path: str | None = None,
         raise SystemExit(
             f"[x] 未知翻译引擎: {engine}(可选 echo / free / google / mymemory / llm)")
     return CachedTranslator(base, path=cache_path)
+
+
+def write_pairs_md(path: str, title: str, rows: list) -> None:
+    """rows: [(时间, 原文, 译文)] → 一张原文/译文对照表。translate_log 与实时通道共用。"""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(f"# {title}\n\n| # | 时间 | 原文 | 译文 |\n|---|---|---|---|\n")
+        for index, (stamp, source, value) in enumerate(rows, 1):
+            cell = lambda text: text.replace("|", "\\|").replace("\n", " ")
+            handle.write(f"| {index} | {stamp} | {cell(source)} | {cell(value)} |\n")
 
 
 def usage_report(translator: Translator) -> str:

@@ -24,7 +24,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from chat_text import norm_key                      # noqa: E402
-from translate_text import build_translator, usage_report   # noqa: E402
+from translate_text import build_translator, usage_report, write_pairs_md   # noqa: E402
 
 for _stream in (sys.stdout,):
     try:
@@ -203,7 +203,8 @@ def main(argv) -> int:
                   f"{type(exc).__name__}: {exc}")
             translated = [f"⟨失败⟩{body}" for _pfx, body in parts]
         for event, (prefix, body), value in zip(chunk, parts, translated):
-            marked = mark_untranslated(body, value)
+            # echo 是桩,输出必然"像是没翻",别拿它去标 ⟨未翻⟩
+            marked = mark_untranslated(body, value) if args.engine != "echo" else value
             if marked.startswith("⟨未翻⟩"):
                 stats["untranslated"] = stats.get("untranslated", 0) + 1
             rows.append((event["t"], event["text"], f"{prefix}{marked}".strip()))
@@ -214,12 +215,8 @@ def main(argv) -> int:
 
     out_path = args.out or os.path.join(
         "logs", f"translated_{time.strftime('%Y%m%d_%H%M%S')}.md")
-    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-    with open(out_path, "w", encoding="utf-8") as handle:
-        handle.write(f"# 翻译结果 {os.path.basename(path)}（引擎 {args.engine}）\n\n")
-        handle.write("| # | 时间 | 原文 | 译文 |\n|---|---|---|---|\n")
-        for index, (stamp, source, value) in enumerate(rows, 1):
-            handle.write(f"| {index} | {stamp:.1f}s | {_cell(source)} | {_cell(value)} |\n")
+    write_pairs_md(out_path, f"翻译结果 {os.path.basename(path)}（引擎 {args.engine}）",
+                  [(f"{stamp:.1f}s", source, value) for stamp, source, value in rows])
 
     print("\n" + "=" * 78)
     print(f"  完成 {len(rows)} 条,耗时 {elapsed:.1f}s "

@@ -329,6 +329,16 @@ def build_args(argv: Sequence[str]):
                    help="与最近几条相似度达该值就不报(0=关闭;归一化后一般不需要)")
     p.add_argument("--sim-change-every", type=int, default=0,
                    help="回放模式下每 N 帧造一次变化(默认 0=不造)")
+    p.add_argument("--translate", action="store_true",
+                   help="启用实时翻译:事件投递到独立线程,不阻塞采集")
+    p.add_argument("--engine", default="free",
+                   choices=["echo", "free", "google", "mymemory", "llm"],
+                   help="翻译引擎(--translate 时生效,默认 free 免费接口)")
+    p.add_argument("--translate-chunk", type=int, default=4,
+                   help="每次请求最多合并翻译几条(默认 4)")
+    p.add_argument("--translate-all", action="store_true",
+                   help="不按颜色过滤,除中文外全翻(默认只翻频道色)")
+    p.add_argument("--no-translate-cache", action="store_true", help="实时翻译不用缓存")
     p.add_argument("--log-dir", default="logs", help="日志目录(默认 logs)")
     p.add_argument("--no-log", action="store_true", help="不落盘,只打控制台")
     return p.parse_args(argv)
@@ -367,6 +377,22 @@ def main(argv: Sequence[str]) -> int:
     t0 = time.perf_counter()
     engines = {head: ocr.build(head) for head in ocr.HEADS}
     print(f"  就绪({time.perf_counter() - t0:.2f} s,一次性开销,不进入每帧延迟)\n")
+
+    worker = None
+    if args.translate:
+        from translate_text import build_translator, write_pairs_md
+        from translate_worker import LiveTranslator, describe
+        translator = build_translator(
+            engine=args.engine, cache_path="" if args.no_translate_cache else None,
+            detect=probe.guess_lang)
+        print(f"  实时翻译已启用(引擎 {args.engine})")
+        worker = LiveTranslator(
+            translator, chunk=args.translate_chunk, prefix_re=ocr.PREFIX,
+            filter_mode="all" if args.translate_all else "color",
+            on_result=lambda r: print(
+                f"  ⌛[{r['t']:7.1f}s 译{r.get('ms', 0):4.0f}ms] "
+                f"{r['text']}   ⇒   {r['translated']}"))
+        worker.start()
 
     stats = Stats()
     seen: dict = {}               # 归一化键 → 最后一次在屏幕上看到的时刻
@@ -407,6 +433,7 @@ def main(argv: Sequence[str]) -> int:
                 stats.ocr_ms.append(ocr_ms)
                 stats.e2e_ms.append(capture_ms + diff_ms + ocr_ms)
                 stats.lines += len(lines)
+                events_before = len(stats.events)
                 fresh, updated, _ = emit(time.perf_counter() - started, ratio,
                                          capture_ms, diff_ms, ocr_ms, lines,
                                          seen, reported, args.dedupe_similar, stats.events,
@@ -414,6 +441,9 @@ def main(argv: Sequence[str]) -> int:
                                          history, ocr.PREFIX)
                 stats.new_lines += fresh
                 stats.updated += updated
+                if worker:
+                    for event in stats.events[events_before:]:
+                        worker.submit(event)
             else:
                 stats.skipped += 1
 
@@ -436,6 +466,20 @@ def main(argv: Sequence[str]) -> int:
 
     wall_s = time.perf_counter() - started
     report(stats, args, wall_s)
+
+    translate_rows = []
+    if worker:
+        print("\n  等待翻译线程排空队列 …")
+        worker.stop()
+        print(f"  ── 翻译汇总 ──\n  {describe(worker, wall_s)}")
+        translate_rows = [(f"{r['t']:.1f}s", r["text"], r["translated"])
+                          for r in worker.results]
+        out_path = os.path.join(args.log_dir,
+                                f"live_translated_{time.strftime('%Y%m%d_%H%M%S')}.md")
+        write_pairs_md(out_path, f"实时翻译 {os.path.basename(log_path or 'live')}"
+                                 f"（引擎 {args.engine}）", translate_rows) if translate_rows else None
+        if translate_rows:
+            print(f"  译文已写入: {os.path.abspath(out_path)}")
 
     if json_path:
         write_json(json_path, args, desc, stats, wall_s)

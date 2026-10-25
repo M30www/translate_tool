@@ -10,6 +10,13 @@ models/*.onnx
 logs/
 *.log
 
+# ---- 翻译缓存（含聊天原文与译文，属隐私内容，不入库）----
+cache/
+
+# ---- 本地配置（可能含 API key）----
+translate_config.json
+.env
+
 # ---- 编辑器 / 系统 ----
 .vscode/
 .idea/

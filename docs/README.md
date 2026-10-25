@@ -17,8 +17,19 @@
 | `../logs/live_<时间戳>.log` | 探针完整输出（UTF-8 BOM），人看 / 留档 |
 | `../logs/live_<时间戳>.json` | 同一次运行的机器可读结果：summary + 全部新行事件 |
 | `../analyze_log.py` | 读上面两种文件出判读报告：抖动簇、低质量行、漏行空窗 |
+| `../logs/translated_<时间戳>.md` | 离线翻译的原文/译文对照表（T0 产物） |
+| `../cache/translate_<engine>.json` | 翻译缓存（含聊天原文，隐私，不入库） |
 
 交接方式：跑完 `python analyze_log.py logs\live_xxx.json`，把**报告原文**贴出来即可，不用截屏终端。
+
+## 翻译相关脚本（T0 阶段）
+
+| 脚本 | 作用 |
+|---|---|
+| `../translate_text.py` | 后端抽象：`echo`（不联网回显）/ `llm`（OpenAI 兼容，默认 DeepSeek）+ 缓存 + 术语表 |
+| `../translate_log.py` | 离线批量翻译历史日志：按频道色过滤 → 去重 → 分批翻译 → 输出对照表 |
+
+用法：`set DS_LLM_API_KEY=...` 后 `python translate_log.py --engine llm --limit 20`。
 
 ## 阅读顺序（新接手 / 隔了很久回来）
 

@@ -1,0 +1,8 @@
+# 统一换行符:本仓库所有文本文件在索引与工作区都用 LF。
+# 本机 core.autocrlf=true,若不钉住,clone/checkout 后会被改成 CRLF,
+# 与"编辑时保留原文件换行符"的约定冲突,并让每次 diff 混入无关改动。
+* text=auto eol=lf
+
+# 二进制资源,不做任何换行/编码转换
+*.png binary
+*.onnx binary

@@ -1,0 +1,20 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.venv/
+
+# ---- 模型（65 MB，可用 download_models.py 重新下载并校验，不入库）----
+models/*.onnx
+
+# ---- 运行产物（真机日志留本地用于判读，不入库）----
+logs/
+*.log
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+
+# ---- 公司项目备份，不公开 ----
+AGENTS.company.md

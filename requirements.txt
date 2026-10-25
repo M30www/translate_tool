@@ -1,0 +1,13 @@
+# OCR 探针依赖 —— 刻意保持极简
+#
+# 为什么没有 paddlepaddle / paddleocr:
+#   那条路的依赖树太大(约 1 GB),实测在这台机器上 pip 解析会卡死,
+#   而它跑的是同一套 PP-OCR 模型的另一种格式,结论不会因此不同。
+#
+# 为什么没有 windows-ocr / winsdk:
+#   Windows 自带的韩文/日文识别引擎需要装系统语言包,会给用户多出输入法。
+#   本方案用自带模型,不碰系统设置。
+
+pillow
+numpy
+rapidocr-onnxruntime

@@ -20,11 +20,15 @@ if not exist ".venv\Scripts\python.exe" (
 )
 
 REM Defaults for double-click:
-REM   --select          pick the chat panel region
-REM   --min-score 0.75  drop low-confidence garbage (real chat lines score >=0.88)
-REM   --translate       translate new lines in a background thread
+REM   --select           pick the chat panel region
+REM   --min-score 0.75   drop low-confidence garbage (real chat lines score >=0.88)
+REM   --translate        translate new lines in a background thread
+REM   --threshold 0.004  a bit less sensitive than the 0.002 default: in a real match
+REM                      the game world keeps moving and only ~17% of OCR runs produced
+REM                      new lines (E11). Watch the recall in the summary: a new chat
+REM                      line only changes ~0.3-1% of the region, so do NOT go much higher.
 REM Engine defaults to "free" (no API key). Use --engine llm after setting DS_LLM_API_KEY.
-set "DEFAULT=--select --min-score 0.75 --translate"
+set "DEFAULT=--select --min-score 0.75 --translate --threshold 0.004"
 
 if "%~1"=="" (
     ".venv\Scripts\python.exe" probe_live.py %DEFAULT%

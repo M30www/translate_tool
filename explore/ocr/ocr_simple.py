@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 import time
 
@@ -142,6 +143,32 @@ def read_boxes(engine, img) -> dict:
     return out
 
 
+def text_color(img_bgr, box, bright_ratio: float = 0.12):
+    """取框内最亮的一批像素求均值 = 字形笔画色(不含背景)。
+
+    颜色是比几何/文本更稳的判据:游戏里玩家聊天是频道色(实测队伍=青 #00B2EE),
+    系统警告是橙 #C46800,UI 提示是灰 —— OCR 每帧抖,颜色不抖。
+    """
+    import numpy as np
+    xs = [float(p[0]) for p in box]
+    ys = [float(p[1]) for p in box]
+    left, right = int(max(0, min(xs))), int(min(img_bgr.shape[1], max(xs)))
+    top, bottom = int(max(0, min(ys))), int(min(img_bgr.shape[0], max(ys)))
+    if right - left < 3 or bottom - top < 3:
+        return (255, 255, 255)
+    patch = img_bgr[top:bottom, left:right].reshape(-1, 3).astype("int16")
+    luma = patch.sum(axis=1)
+    keep = max(3, int(len(patch) * bright_ratio))
+    idx = np.argpartition(luma, -keep)[-keep:]
+    bgr = patch[idx].mean(axis=0)          # img 是 BGR
+    return (int(round(bgr[2])), int(round(bgr[1])), int(round(bgr[0])))
+
+
+def color_key(rgb, step: int = 48) -> tuple:
+    """把颜色量化成可比较的桶(默认 48 级),用于判断"是不是同一个频道色"。"""
+    return tuple(int(c) // step for c in rgb)
+
+
 def _same_visual_line(a: tuple, b: tuple, gap_ratio: float) -> bool:
     """两个框是否属于同一条视觉行。
 
@@ -167,7 +194,8 @@ def merge_fragments(entries: list, gap_ratio: float = 0.8) -> list:
     必须收敛式合并(反复扫到不再变化):按 (top,left) 贪心一遍是不够的——
     第 3 段可能因为第 1 段先吸收了第 2 段才变得"相邻",单趟会漏合。
 
-    entries: (top, left, bottom, right, src, score, text) → 返回同样形状的合并结果。
+    entries: (top, left, bottom, right, src, score, text, rgb)
+    返回: (top, left, src, score, text, rgb)
     """
     groups = [{"bbox": tuple(e[:4]), "items": [e]}
               for e in sorted(entries, key=lambda e: (e[0], e[1]))]
@@ -196,17 +224,63 @@ def merge_fragments(entries: list, gap_ratio: float = 0.8) -> list:
             # 单字符段基本是左侧头像/图标区的误检碎片(实测 `や`),拼进去会污染原文;
             # 但不合并时它可能是一条真实的一字消息,所以只在"同组还有别的段"时丢。
             items = [e for e in items if sum(ch.isalnum() for ch in e[6]) > 1] or items
+        rgb = tuple(int(round(sum(e[7][i] for e in items) / len(items))) for i in range(3))
         result.append((
             group["bbox"][0], group["bbox"][1],
             "+".join(sorted({e[4] for e in items})),
             max(e[5] for e in items),   # 取最高分:前后缀碎片分低但不影响正文可信度
             " ".join(e[6] for e in items),
+            rgb,
         ))
     return result
 
 
-def ensemble(img, engines: dict, min_score: float, merge: bool = True) -> list:
-    """两个模型各读一遍,逐框择优,可选地把同一行的碎片拼起来,按屏幕顺序返回。"""
+# 新消息的起点 = 行首出现 `[昵称]`(玩家聊天带冒号,系统消息不带)。
+# 允许最多 8 个前导噪声字符:OCR 常在行首粘上 `22`、`·` 之类碎片,不允许的话
+# 会把两条不同的聊天并成一条(实测踩过)。纯文字系统提示(如「可发送至该频道…」)
+# 不带方括号,只能靠颜色+相邻性兜住。
+PREFIX = re.compile(r"^\s*.{0,8}?[\[\(【][^\]\)】]{1,20}[\]\)】]")
+LINE_GAP = 40.0     # 续行判定:与上一行 y 差在此之内(约 1.5 个行高,实测行高 ~25px)
+
+
+def join_wrapped(lines: list, max_gap: float = LINE_GAP) -> list:
+    """把游戏内换行产生的续行拼回上一条消息。
+
+    依据:长消息在游戏聊天框里会折成**多行**(实测一条长韩文句占 3 行,y 差正好一行高),
+    续行不带昵称前缀。这跟"检测框把一行切碎"是两码事——那个靠 merge_fragments 横向合,
+    这个必须纵向合,否则一句话被当成 2~3 条独立消息送去翻译。
+
+    **必须同色才合**:系统提示也没有昵称前缀,只靠"无前缀"会把「可发送至该频道…」
+    并进上一条聊天消息、直接吞掉一条消息(实测踩过);而续行与首行必然同色,
+    系统提示是另一种颜色(实测橙 vs 频道青),所以颜色能把两者干净分开。
+
+    lines 需已按 (y, x) 排序,元素为 (top, left, src, score, text, rgb)。
+    """
+    result: list = []
+    last_top = None
+    for top, left, src, score, text, rgb in lines:
+        same_color = bool(result) and color_key(rgb) == color_key(result[-1][5])
+        is_continuation = (result and not PREFIX.match(text) and same_color
+                           and last_top is not None and 0 < top - last_top <= max_gap)
+        if is_continuation:
+            p_top, p_left, p_src, p_score, p_text, p_rgb = result[-1]
+            result[-1] = (p_top, p_left, p_src, max(p_score, score), p_text + " " + text, p_rgb)
+            last_top = top
+            continue
+        result.append((top, left, src, score, text, rgb))
+        last_top = top
+    return result
+
+
+def ensemble(img, engines: dict, min_score: float, merge: bool = True,
+             join_lines: bool = False) -> list:
+    """两个模型各读一遍,逐框择优,可选地把同一行的碎片横向拼起来,按屏幕顺序返回。
+
+    返回 (top, left, src, score, text, rgb)。rgb 是该行字形笔画色,用于区分消息类型
+    (实测:队伍聊天=青 #00B2EE、系统提示=橙 #C46800、UI 提示=灰)。
+
+    join_lines 默认 **关**;开启时只合并同色续行(颜色把系统提示排除在外),详见 join_wrapped。
+    """
     ko = read_boxes(engines["ko5"], img)
     v6 = read_boxes(engines["v6"], img)
 
@@ -229,15 +303,16 @@ def ensemble(img, engines: dict, min_score: float, merge: bool = True) -> list:
 
         xs = [float(p[0]) for p in box]
         ys = [float(p[1]) for p in box]
-        entries.append((min(ys), min(xs), max(ys), max(xs), src, score, text))
+        rgb = text_color(img, box)
+        entries.append((min(ys), min(xs), max(ys), max(xs), src, score, text, rgb))
 
     lines = merge_fragments(entries) if merge else [
-        (e[0], e[1], e[4], e[5], e[6]) for e in entries]
+        (e[0], e[1], e[4], e[5], e[6], e[7]) for e in entries]
 
     # 依据:RapidOCR 返回的顺序不保证和视觉顺序一致。按「左上角」排序,
     # 输出才和屏幕上看到的聊天行顺序对得上;按 12px 分行位,容忍轻微抖动。
     lines.sort(key=lambda r: (round(r[0] / 12), r[1]))
-    return lines
+    return join_wrapped(lines) if join_lines else lines
 
 
 def collect_images(path: str) -> list:
@@ -268,6 +343,8 @@ def main() -> int:
                         help="低于这个置信度的行不打印(默认 0.5,调低能看到更多候选)")
     parser.add_argument("--no-merge", action="store_true",
                         help="不做同一行碎片合并(用于对比合并前后的差异)")
+    parser.add_argument("--no-join-wrapped", action="store_true",
+                        help="不把换行显示的续行拼回上一条(默认拼:已用颜色区分,不会误并系统提示)")
     args = parser.parse_args()
 
     # 依据:中文 Windows 的控制台是 GBK,里面没有韩文和日文假名,
@@ -306,7 +383,8 @@ def main() -> int:
             continue
 
         started = time.perf_counter()
-        lines = ensemble(img, engines, args.min_score, merge=not args.no_merge)
+        lines = ensemble(img, engines, args.min_score, merge=not args.no_merge,
+                         join_lines=not args.no_join_wrapped)
         cost_ms = (time.perf_counter() - started) * 1000
 
         if not lines:
@@ -314,10 +392,11 @@ def main() -> int:
             continue
 
         print(f"         {size}    {cost_ms:,.0f} ms")
-        print(f"         {'#':>3}  {'来自':<4} {'置信度':>7}  文本")
-        print(f"         {'-' * 62}")
-        for number, (_top, _left, src, score, text) in enumerate(lines, 1):
-            print(f"         {number:>3}  {src:<4} {score:>7.3f}  {text}")
+        print(f"         {'#':>3}  {'来自':<4} {'置信度':>7} {'颜色':<8} 文本")
+        print(f"         {'-' * 70}")
+        for number, (_top, _left, src, score, text, rgb) in enumerate(lines, 1):
+            color = "#%02X%02X%02X" % tuple(rgb)
+            print(f"         {number:>3}  {src:<4} {score:>7.3f} {color:<8} {text}")
         print()
 
     return 0

@@ -108,11 +108,20 @@ def report(summary: dict, events: List[dict], path: str) -> None:
     for event in events[:TIMELINE_LIMIT]:
         gap = event["t"] - last
         mark = "  " if gap < 5 else " +"
+        color = event.get("col", "")
         print(f"  {mark}[{event['t']:7.1f}s +{gap:5.1f}s] {event['src']:<4}"
-              f" {event['score']:5.3f}  {event['text']}")
+              f" {event['score']:5.3f} {color:<8} {event['text']}")
         last = event["t"]
     if len(events) > TIMELINE_LIMIT:
         print(f"  … 其余 {len(events) - TIMELINE_LIMIT} 条略")
+
+    colors: dict = {}
+    for event in events:
+        colors.setdefault(event.get("col", "-"), []).append(event)
+    if len(colors) > 1:
+        print(f"\n  ── 文字颜色分布 {len(colors)} 种(用来区分聊天/系统提示)──")
+        for color, group in sorted(colors.items(), key=lambda kv: -len(kv[1]))[:8]:
+            print(f"    {color:<9} ×{len(group):<4} 例:{group[0]['text'][:34]}")
 
     buckets = unify(events)
     print(f"\n  ── 按正文归一化后的真实消息 {len(buckets)} 条"

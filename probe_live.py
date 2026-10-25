@@ -173,13 +173,13 @@ def emit(elapsed: float, ratio: float, capture_ms: float, diff_ms: float,
     now = time.perf_counter()
     fresh = []
     frame: dict = {}
-    for top, left, src, score, text in lines:
+    for top, left, src, score, text, rgb in lines:
         key = norm_key(text)
         if key:
-            # 同帧重复只留第一条;行位(top/left)一并留存,便于判读"是否被合并成一行"
-            frame.setdefault(key, (top, left, src, score, text))
+            # 同帧重复只留第一条;行位(top/left)与颜色一并留存,便于判读与区分消息类型
+            frame.setdefault(key, (top, left, src, score, text, rgb))
 
-    for key, (top, left, src, score, text) in frame.items():
+    for key, (top, left, src, score, text, rgb) in frame.items():
         was_on_screen = (now - seen.get(key, -1e9)) <= visible_ttl
         seen[key] = now
         if was_on_screen:
@@ -191,17 +191,19 @@ def emit(elapsed: float, ratio: float, capture_ms: float, diff_ms: float,
             if any(SequenceMatcher(None, other, text).ratio() >= similar_thr
                    for other in [e["text"] for e in events[-6:]]):
                 continue
-        fresh.append((key, top, left, src, score, text))
+        fresh.append((key, top, left, src, score, text, rgb))
 
     if fresh:
         e2e = capture_ms + diff_ms + ocr_ms
         print(f"\n[{elapsed:7.1f}s] 新行 {len(fresh)}   变化 {ratio*100:5.2f}%"
               f"   OCR {ocr_ms:.0f} ms   端到端 {e2e:.0f} ms")
-        for key, top, left, src, score, text in fresh:
-            print(f"   {src:<4} {score:5.3f}  {text}")
+        for key, top, left, src, score, text, rgb in fresh:
+            color = "#%02X%02X%02X" % tuple(rgb)
+            print(f"   {src:<4} {score:5.3f} {color}  {text}")
             reported[key] = now
             events.append({"t": round(elapsed, 3), "y": int(top), "x": int(left),
-                           "src": src, "score": round(float(score), 4), "text": text})
+                           "col": color, "src": src, "score": round(float(score), 4),
+                           "text": text})
     return len(fresh), list(frame)
 
 
@@ -292,6 +294,8 @@ def build_args(argv: Sequence[str]):
                    help="消息在屏幕上存活的判定窗口,挡住漏读一帧导致的误报(默认 6 秒)")
     p.add_argument("--no-merge", action="store_true",
                    help="不做同一行碎片合并(默认合并:长句被检测框切碎时要靠它拼回去)")
+    p.add_argument("--no-join-wrapped", action="store_true",
+                   help="不把换行显示的续行拼回上一条(默认拼:靠颜色区分,不会误并系统提示)")
     p.add_argument("--dedupe-similar", type=float, default=0.0,
                    help="与最近几条相似度达该值就不报(0=关闭;归一化后一般不需要)")
     p.add_argument("--sim-change-every", type=int, default=0,
@@ -365,7 +369,8 @@ def main(argv: Sequence[str]) -> int:
             if ratio >= args.threshold:
                 t = time.perf_counter()
                 lines = ocr.ensemble(to_bgr(img), engines, args.min_score,
-                                     merge=not args.no_merge)
+                                     merge=not args.no_merge,
+                                     join_lines=not args.no_join_wrapped)
                 ocr_ms = (time.perf_counter() - t) * 1000
                 stats.ocr_runs += 1
                 stats.ocr_ms.append(ocr_ms)

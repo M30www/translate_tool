@@ -160,15 +160,18 @@ def resolve_source(probe, args):
 def emit(elapsed: float, ratio: float, capture_ms: float, diff_ms: float,
          ocr_ms: float, lines: list, seen: dict, reported: dict,
          similar_thr: float, events: list, visible_ttl: float,
-         forget_after: float) -> Tuple[int, list]:
+         forget_after: float, history: list, prefix_re) -> Tuple[int, list]:
     """只报「刚出现在屏幕上、且没报过」的消息;没新行就一个字都不打。
 
     判据全部建立在 norm_key 上(剥掉行首昵称前缀、去空白标点),因为 OCR 在这类小字上
     的抖动主要发生在前缀:正文一致的两帧会被原文比较判成两条不同消息(实测一条消息
-    被报 18 次)。具体两条规则:
+    被报 18 次)。具体三条规则:
       · seen     : key → 最后一次在屏幕上看到的时刻。存活期内(visible_ttl)出现 = 不是新消息,
                    这样偶尔漏读一帧也不会误报。
       · reported : key → 最后报出时刻。forget_after 内不重报,挡掉滚动/回看造成的重复。
+      · history  : 最近报过的 (key, text)。若当前行**没有昵称前缀**且其 key 是某条已报消息的
+                   子串,说明这条消息的头部已被视口裁掉(滚出画面),它只是残片 → 不报。
+                   实测:长句后半截 `못하지 다음 게임은…`、系统提示尾部 `言息数量有限…` 都属此类。
     """
     now = time.perf_counter()
     fresh = []
@@ -186,6 +189,9 @@ def emit(elapsed: float, ratio: float, capture_ms: float, diff_ms: float,
             continue
         if (now - reported.get(key, -1e9)) <= forget_after:
             continue
+        if not prefix_re.match(text) and len(key) >= 4:
+            if any(key in old_key for old_key, _old_text in history):
+                continue        # 残缺续行(头部被裁),不是新消息
         if similar_thr > 0:
             from difflib import SequenceMatcher
             if any(SequenceMatcher(None, other, text).ratio() >= similar_thr
@@ -201,6 +207,8 @@ def emit(elapsed: float, ratio: float, capture_ms: float, diff_ms: float,
             color = "#%02X%02X%02X" % tuple(rgb)
             print(f"   {src:<4} {score:5.3f} {color}  {text}")
             reported[key] = now
+            history.append((key, text))
+            del history[:-40]          # 只留最近 40 条,足够挡住刚滚出去的残片
             events.append({"t": round(elapsed, 3), "y": int(top), "x": int(left),
                            "col": color, "src": src, "score": round(float(score), 4),
                            "text": text})
@@ -342,6 +350,7 @@ def main(argv: Sequence[str]) -> int:
     stats = Stats()
     seen: dict = {}               # 归一化键 → 最后一次在屏幕上看到的时刻
     reported: dict = {}           # 归一化键 → 最后报出时刻
+    history: list = []            # 最近报过的 (key, text),用来识别"头部被裁掉的残片"
     prev_gray: Optional[object] = None
     started = time.perf_counter()
     deadline = started + args.duration if args.duration > 0 else None
@@ -379,7 +388,8 @@ def main(argv: Sequence[str]) -> int:
                 fresh, _ = emit(time.perf_counter() - started, ratio,
                                 capture_ms, diff_ms, ocr_ms, lines,
                                 seen, reported, args.dedupe_similar, stats.events,
-                                args.visible_ttl, args.recent_ttl)
+                                args.visible_ttl, args.recent_ttl,
+                                history, ocr.PREFIX)
                 stats.new_lines += fresh
             else:
                 stats.skipped += 1

@@ -1,14 +1,18 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-translate_text.py —— 翻译后端抽象(Echo / LLM) + 缓存 + 术语表
+translate_text.py —— 翻译后端抽象 + 缓存 + 术语表
   目的是让"翻译"可以随时换实现,而管道不用动。当前实现:
-    EchoTranslator 不联网,只回显,用来验证管道/缓存/输出格式(零成本)
-    LlmTranslator  任何 OpenAI 兼容接口(默认 DeepSeek),一次请求翻一批
+    EchoTranslator   不联网,只回显,用来验证管道/缓存/输出格式(零成本)
+    GoogleTranslator 谷歌网页翻译的非官方接口:免 key、质量对游戏短句够用
+    MyMemoryTranslator 公开免费 API:免 key,但需源语言,韩→中质量一般
+    LlmTranslator    任何 OpenAI 兼容接口(默认 DeepSeek),一次请求翻一批
     CachedTranslator 用 chat_text.norm_key 做缓存键,命中即返回
 
+  ★ 免费引擎只用于**探索**,不可用于正式分发:非官方接口随时可能失效/限流,
+    且属于灰色用法。正式版换 LlmTranslator 或本地模型。
   零新增依赖:只用标准库 urllib —— 本机 .venv\\pip.exe 已失效(见 AGENTS.md),能不装包就不装。
-  配置走环境变量:DS_LLM_API_KEY / DS_LLM_BASE_URL / DS_LLM_MODEL。
+  LLM 配置走环境变量:DS_LLM_API_KEY / DS_LLM_BASE_URL / DS_LLM_MODEL。
 """
 
 from __future__ import annotations
@@ -18,6 +22,7 @@ import os
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -67,6 +72,94 @@ class EchoTranslator(Translator):
 
     def translate_batch(self, texts: list[str]) -> list[str]:
         return [f"〔译〕{text}" for text in texts]
+
+
+def _fetch_json(url: str, timeout: float) -> dict | list:
+    request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+class GoogleTranslator(Translator):
+    """谷歌网页翻译的非官方端点:免 key。
+
+    画质对游戏短句够用,但**只用于探索**:非官方接口随时可能限流/失效,且属灰色用法。
+    一次只能翻一条,所以逐条请求并加小延时(delay)避免被掐。
+    """
+
+    name = "google"
+    URL = "https://translate.googleapis.com/translate_a/single"
+
+    def __init__(self, target: str = "zh-CN", timeout: float = 10.0, delay: float = 0.2):
+        self.target = target
+        self.timeout = timeout
+        self.delay = delay
+
+    def _one(self, text: str) -> str:
+        query = urllib.parse.urlencode({"client": "gtx", "sl": "auto",
+                                        "tl": self.target, "dt": "t", "q": text})
+        data = _fetch_json(f"{self.URL}?{query}", self.timeout)
+        # 返回形如 [[["译文","原文",...],...], null, "ko", ...]:把所有分段拼起来
+        return "".join(segment[0] for segment in (data[0] or []) if segment and segment[0])
+
+    def translate_batch(self, texts: list[str]) -> list[str]:
+        out = []
+        for index, text in enumerate(texts):
+            if index:
+                time.sleep(self.delay)
+            out.append(self._one(text))
+        return out
+
+
+class MyMemoryTranslator(Translator):
+    """MyMemory 公开免费 API:免 key,但要求给出源语言,韩→中质量一般。"""
+
+    name = "mymemory"
+    URL = "https://api.mymemory.translated.net/get"
+    LANG = {"ko": "ko", "ja": "ja", "en": "en", "zh": "zh-CN"}
+
+    def __init__(self, target: str = "zh-CN", timeout: float = 10.0, delay: float = 0.3,
+                 detect=None):
+        self.target = target
+        self.timeout = timeout
+        self.delay = delay
+        self.detect = detect or (lambda _text: "en")
+
+    def _one(self, text: str) -> str:
+        source = self.LANG.get(self.detect(text), "en")
+        query = urllib.parse.urlencode({"q": text, "langpair": f"{source}|{self.target}"})
+        data = _fetch_json(f"{self.URL}?{query}", self.timeout)
+        return str((data.get("responseData") or {}).get("translatedText") or text)
+
+    def translate_batch(self, texts: list[str]) -> list[str]:
+        out = []
+        for index, text in enumerate(texts):
+            if index:
+                time.sleep(self.delay)
+            out.append(self._one(text))
+        return out
+
+
+def probe_engines(names: list[str], timeout: float = 8.0) -> tuple[str, dict]:
+    """逐个用一句韩文试翻,返回(第一个能用的引擎名, 各引擎探测结果)。
+
+    国内直连 Google 经常不通,所以不能把引擎写死;先探再用,失败原因如实报出来。
+    """
+    results: dict[str, str] = {}
+    for name in names:
+        try:
+            if name == "google":
+                value = GoogleTranslator(timeout=timeout, delay=0)._one("안녕")
+            elif name == "mymemory":
+                value = MyMemoryTranslator(timeout=timeout, delay=0)._one("안녕")
+            else:
+                results[name] = "跳过(无需探测)"
+                continue
+            results[name] = f"可用 → {value}"
+            return name, results
+        except Exception as exc:                        # noqa: BLE001
+            results[name] = f"不可用: {type(exc).__name__}: {exc}"
+    return "", results
 
 
 class LlmTranslator(Translator):
@@ -211,16 +304,31 @@ class CachedTranslator(Translator):
 
 def build_translator(engine: str = "llm", cache_path: str | None = None,
                      glossary: dict | None = None, api_key: str | None = None,
-                     base_url: str | None = None, model: str | None = None) -> Translator:
+                     base_url: str | None = None, model: str | None = None,
+                     delay: float = 0.2, detect=None) -> Translator:
     """按名字造一个(带缓存的)翻译器。
 
     缓存文件按引擎分开:否则先用 echo 跑通管道时写进去的假译文,
     会在切换成 llm 后被当真译文命中(踩过)。
+    engine="free" 表示"自动挑一个能用的免费引擎"(国内直连 Google 经常不通)。
     """
+    if engine == "free":
+        picked, results = probe_engines(["google", "mymemory"])
+        for name, outcome in results.items():
+            print(f"  [探测] {name:<9} {outcome}")
+        if not picked:
+            raise SystemExit("[x] 两个免费引擎都不可用;可先用 --engine echo 验证管道")
+        engine = picked
+        print(f"  → 使用 {engine}")
     if cache_path is None:
         cache_path = f"cache/translate_{engine}.json"
+
     if engine == "echo":
         base: Translator = EchoTranslator()
+    elif engine == "google":
+        base = GoogleTranslator(delay=delay)
+    elif engine == "mymemory":
+        base = MyMemoryTranslator(delay=max(delay, 0.3), detect=detect)
     elif engine == "llm":
         base = LlmTranslator(
             api_key=api_key or os.environ.get("DS_LLM_API_KEY", ""),
@@ -229,7 +337,8 @@ def build_translator(engine: str = "llm", cache_path: str | None = None,
             glossary=glossary if glossary is not None else DEFAULT_GLOSSARY,
         )
     else:
-        raise SystemExit(f"[x] 未知翻译引擎: {engine}(可选 echo / llm)")
+        raise SystemExit(
+            f"[x] 未知翻译引擎: {engine}(可选 echo / free / google / mymemory / llm)")
     return CachedTranslator(base, path=cache_path)
 
 
@@ -237,7 +346,7 @@ def usage_report(translator: Translator) -> str:
     """把缓存层剥开,拿到底层 LLM 的用量。"""
     inner = getattr(translator, "inner", translator)
     if not isinstance(inner, LlmTranslator):
-        return "用量:不适用(echo 引擎)"
+        return f"用量:不适用({inner.name} 引擎,免费接口无用量统计)"
     cost = (inner.prompt_tokens * PRICE_INPUT_PER_M
             + inner.completion_tokens * PRICE_OUTPUT_PER_M) / 1_000_000
     return (f"用量:请求 {inner.requests} 次,输入 {inner.prompt_tokens} / "

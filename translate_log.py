@@ -18,6 +18,7 @@ import glob
 import importlib.util
 import json
 import os
+import re
 import sys
 import time
 
@@ -98,6 +99,23 @@ def select_events(events: list, chat_color: str, guess_lang) -> tuple[list, dict
     return picked, stats
 
 
+def split_prefix(text: str, prefix_re) -> tuple[str, str]:
+    """拆出 `[昵称]:` 前缀与正文。
+
+    只把正文送去翻译:昵称是名字,翻了没意义,实测还会把全角冒号搞成 `[Ir1s] ：`。
+    前缀原样拼回显示,读者仍然知道是谁在说。
+    """
+    match = prefix_re.match(text)
+    if not match:
+        return "", text
+    end = match.end()
+    # PREFIX 只认到 `]`,后面的冒号要一并吃掉,否则它会被送进翻译(实测译出 `[Ir1s]：`)
+    colon = re.match(r"\s*[:：]\s*", text[end:])
+    if colon:
+        end += colon.end()
+    return text[:end], text[end:]
+
+
 def dedupe(events: list) -> list:
     """同一句话只翻一次(保留最早出现的那条)。"""
     seen, unique = set(), []
@@ -113,8 +131,11 @@ def dedupe(events: list) -> list:
 def main(argv) -> int:
     parser = argparse.ArgumentParser(description="离线批量翻译探针日志里的聊天")
     parser.add_argument("path", nargs="?", help="日志 .json(默认取最新)")
-    parser.add_argument("--engine", default="echo", choices=["echo", "llm"],
-                        help="echo=不联网回显(默认);llm=调用 OpenAI 兼容接口")
+    parser.add_argument("--engine", default="free",
+                        choices=["echo", "free", "google", "mymemory", "llm"],
+                        help="free=自动挑一个能用的免费引擎(默认);echo=回显不联网;llm=OpenAI 兼容")
+    parser.add_argument("--delay", type=float, default=0.2,
+                        help="免费引擎逐条请求之间的间隔秒数(默认 0.2,防限流)")
     parser.add_argument("--limit", type=int, default=0, help="最多翻多少条(0=不限)")
     parser.add_argument("--batch-size", type=int, default=8, help="每次请求翻几条(默认 8)")
     parser.add_argument("--chat-color", help="频道色 #RRGGBB(默认按出现最多的颜色自动判)")
@@ -129,6 +150,7 @@ def main(argv) -> int:
         raise SystemExit(f"[x] {path} 里没有 events")
 
     probe = _load("tp_probe", os.path.join("ocr_probe.py"))
+    ocr = _load("tp_ocr", os.path.join("explore", "ocr", "ocr_simple.py"))
     chat_color = args.chat_color or dominant_color(events)
     picked, stats = select_events(events, chat_color or "", probe.guess_lang)
     unique = dedupe(picked)
@@ -143,20 +165,22 @@ def main(argv) -> int:
     print("=" * 78)
 
     translator = build_translator(engine=args.engine,
-                                  cache_path="" if args.no_cache else None)
+                                  cache_path="" if args.no_cache else None,
+                                  delay=args.delay, detect=probe.guess_lang)
 
     started = time.perf_counter()
     rows = []
     for start in range(0, len(unique), max(1, args.batch_size)):
         chunk = unique[start:start + max(1, args.batch_size)]
+        parts = [split_prefix(item["text"], ocr.PREFIX) for item in chunk]
         try:
-            translated = translator.translate_batch([item["text"] for item in chunk])
+            translated = translator.translate_batch([body for _pfx, body in parts])
         except Exception as exc:                        # noqa: BLE001
             print(f"  [!] 第 {start // args.batch_size + 1} 批失败: "
                   f"{type(exc).__name__}: {exc}")
-            translated = [f"⟨失败⟩{item['text']}" for item in chunk]
-        for event, value in zip(chunk, translated):
-            rows.append((event["t"], event["text"], value))
+            translated = [f"⟨失败⟩{body}" for _pfx, body in parts]
+        for event, (prefix, _body), value in zip(chunk, parts, translated):
+            rows.append((event["t"], event["text"], f"{prefix}{value}".strip()))
         print(f"  … 已翻 {min(start + len(chunk), len(unique))}/{len(unique)}")
     elapsed = time.perf_counter() - started
     if hasattr(translator, "save"):

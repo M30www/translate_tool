@@ -26,10 +26,21 @@
 
 | 脚本 | 作用 |
 |---|---|
-| `../translate_text.py` | 后端抽象：`echo`（不联网回显）/ `llm`（OpenAI 兼容，默认 DeepSeek）+ 缓存 + 术语表 |
+| `../translate_text.py` | 后端抽象：`echo`（回显）/ `google`、`mymemory`（免费，探索用）/ `llm`（OpenAI 兼容）+ 缓存 + 术语表 |
 | `../translate_log.py` | 离线批量翻译历史日志：按频道色过滤 → 去重 → 分批翻译 → 输出对照表 |
 
-用法：`set DS_LLM_API_KEY=...` 后 `python translate_log.py --engine llm --limit 20`。
+| 引擎 | 需要 key | 质量 | 用途 |
+|---|---|---|---|
+| `echo` | 否 | 无 | 只验证管道/缓存/输出格式 |
+| `free`（默认） | 否 | 中 | **自动挑一个能用的免费引擎**（先试 google，再试 mymemory） |
+| `google` / `mymemory` | 否 | 中 | 免费接口，**仅探索**；非官方、可能失效、ToS 灰色 |
+| `llm` | 是 | 好 | 正式版方向；术语表与批量只对这个引擎生效 |
+
+```bash
+python translate_log.py                        # 默认 free，自动探测
+python translate_log.py --engine free --limit 20
+set DS_LLM_API_KEY=sk-xxx && python translate_log.py --engine llm --limit 20
+```
 
 ## 阅读顺序（新接手 / 隔了很久回来）
 

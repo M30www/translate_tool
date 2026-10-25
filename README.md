@@ -28,9 +28,12 @@ run_live.bat
 # 3. 判读这次运行的效果（重复行、误读、漏行、颜色分布）
 python analyze_log.py logs\live_xxx.json --expect chat_samples.txt
 
-# 4. 离线翻译历史日志，输出原文/译文对照表
-python translate_log.py --limit 20
+# 4. 离线翻译最新日志，输出原文/译文对照表（双击即可，无需 API key）
+run_translate.bat
 ```
+
+三个 bat 都可以**直接双击**，也可以带参数覆盖默认值，例如
+`run_translate.bat --limit 36`、`run_live.bat --min-score 0.6`。
 
 装包请用 `.venv\Scripts\python.exe -m pip install ...`（`pip.exe` 因环境搬迁已失效）。
 

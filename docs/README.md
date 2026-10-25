@@ -1,57 +1,23 @@
-# 文档索引
+# 文档地图
 
-每个文件只回答一类问题，别在错误的文件里找答案。
-
-| 文件 | 回答什么问题 | 什么时候看 |
+| 文件 | 一句话 | 什么时候看 |
 |---|---|---|
-| `feasibility-and-design.md` | 这项目该不该做、产品形态怎么定、风险在哪、路线图 | 想改方向 / 加功能之前 |
-| `dev-log.md` | 每次改动：目的、改了什么、为什么、怎么验证、遗留什么 | **动手之前**（看有没有人踩过）+ 追责任何一个决定 |
-| `experiments.md` | 实测数据：什么条件下、什么结果、多快、结论 | 调参数 / 判断"够不够快"之前 |
-| `../chat_samples.txt` | 真机测试用的聊天句与三轮测试顺序 | 要跑 OCR 实测时 |
-| `../AGENTS.md` | 协作约定 + 免验证事实（省掉重复探索） | 每次开工前 |
+| `../README.md` | 项目简介与快速开始（给人看的，最短） | 第一次打开项目 |
+| `feasibility-and-design.md` | 为什么做、风险在哪、路线图 | 想改方向 / 加功能前 |
+| `knowledge-base.md` | **系统现在怎么工作**：环节、判据、参数、已知限制、排障 | 动手改代码前 |
+| `dev-log.md` | 每次改动的原因与遗留（`D<n>`，时间序） | 追"当初为什么这么定" |
+| `experiments.md` | 实测数据（`E<n>`：条件 + 数字 + 结论） | 调参数 / 判断够不够快 |
 
-## 运行产物（不是文档，别手改）
+## 阅读顺序
 
-| 路径 | 内容 |
-|---|---|
-| `../logs/live_<时间戳>.log` | 探针完整输出（UTF-8 BOM），人看 / 留档 |
-| `../logs/live_<时间戳>.json` | 同一次运行的机器可读结果：summary + 全部新行事件 |
-| `../analyze_log.py` | 读上面两种文件出判读报告：抖动簇、低质量行、漏行空窗 |
-| `../logs/translated_<时间戳>.md` | 离线翻译的原文/译文对照表（T0 产物） |
-| `../cache/translate_<engine>.json` | 翻译缓存（含聊天原文，隐私，不入库） |
-
-交接方式：跑完 `python analyze_log.py logs\live_xxx.json`，把**报告原文**贴出来即可，不用截屏终端。
-
-## 翻译相关脚本（T0 阶段）
-
-| 脚本 | 作用 |
-|---|---|
-| `../translate_text.py` | 后端抽象：`echo`（回显）/ `google`、`mymemory`（免费，探索用）/ `llm`（OpenAI 兼容）+ 缓存 + 术语表 |
-| `../translate_log.py` | 离线批量翻译历史日志：按频道色过滤 → 去重 → 分批翻译 → 输出对照表 |
-
-| 引擎 | 需要 key | 质量 | 用途 |
-|---|---|---|---|
-| `echo` | 否 | 无 | 只验证管道/缓存/输出格式 |
-| `free`（默认） | 否 | 中 | **自动挑一个能用的免费引擎**（先试 google，再试 mymemory） |
-| `google` / `mymemory` | 否 | 中 | 免费接口，**仅探索**；非官方、可能失效、ToS 灰色 |
-| `llm` | 是 | 好 | 正式版方向；术语表与批量只对这个引擎生效 |
-
-```bash
-python translate_log.py                        # 默认 free，自动探测
-python translate_log.py --engine free --limit 20
-set DS_LLM_API_KEY=sk-xxx && python translate_log.py --engine llm --limit 20
-```
-
-## 阅读顺序（新接手 / 隔了很久回来）
-
-1. `../AGENTS.md` 的「已确认事实」——先知道哪些不用再查。
-2. `dev-log.md` 最新 1~2 条——知道现在停在哪儿、下一步该干嘛（看"遗留"）。
-3. `experiments.md` 中与被改动模块相关的条目——把数字和条件带上，别凭记忆。
-4. 需要动架构或功能范围时，才回去读 `feasibility-and-design.md`。
+1. `../README.md` → 知道这是什么。
+2. `knowledge-base.md` → 知道现在怎么工作、坑在哪。
+3. `dev-log.md` 最新 1~2 条 → 知道停在哪儿、下一步干嘛（看"遗留"）。
+4. 要动架构或范围时，才回头读 `feasibility-and-design.md`。
 
 ## 编号约定
 
-- `D<n>`：变更记录条目，见 `dev-log.md`。
-- `E<n>`：实验记录条目，见 `experiments.md`。
-- 代码注释里需要指向文档时，只留一行指针，例如 `# 数据见 docs/experiments.md E3`。
-- 被后续实验否掉的旧条目**保留不删**，在结论后追加「已废弃（日期，原因）」，这样能看见转弯的地方。
+- `D<n>` 变更（dev-log）· `E<n>` 实验（experiments）。
+- 代码里指文档只留一行指针，例如 `# 数据见 docs/experiments.md E3`。
+- **结论变了改 `knowledge-base.md`（当前状态快照），历史留在 `dev-log.md`，不要两边复述。**
+- 被推翻的结论保留不删，在结论后追加「已废弃（日期，原因）」。

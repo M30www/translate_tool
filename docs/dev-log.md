@@ -25,8 +25,9 @@
 - 功能验证：在 G 盘跑 `probe_live.py --replay`（OCR 推理正常，端到端 p95 714 ms）+ `analyze_log.py` 读真机日志（召回 24/25）。
 
 **遗留**
-- 进 git 前要清理：`probe_ko.json`（早期探针残留）、`debug.log`、`__pycache__/`、`logs/`（运行产物）、`AGENTS.company.md`（公司项目备份，不该公开）；并加 `.gitignore` 排除 `.venv/`（277 MB）与 `models/*.onnx`（65 MB，可重新下载）。
+- ~~进 git 前要清理残留并加 `.gitignore`~~ → 已在同一轮完成：删掉 `probe_ko.json` / `debug.log` / `__pycache__`，`.gitignore` 排除 `.venv/`、`models/*.onnx`、`logs/`、`*.log`、`AGENTS.company.md`；另加 `.gitattributes`（`* text=auto eol=lf`）钉死换行符，因为本机 `core.autocrlf=true` 会把工作区改成 CRLF、与"保留原文件换行符"的约定冲突。首次提交 25 个文件，`.git` 0.28 MB。
 - C 盘原件未删，等用户在 G 盘实跑一次后再手动清理。
+- 尚未配置 GitHub remote（需先手动建空仓库）。
 
 ---
 
